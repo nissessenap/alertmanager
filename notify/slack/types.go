@@ -15,6 +15,7 @@ package slack
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -36,12 +37,13 @@ type Notifier struct {
 
 // message is the content of a Slack notification.
 type message struct {
-	Username    string       `json:"username,omitempty"`
-	IconEmoji   string       `json:"icon_emoji,omitempty"`
-	IconURL     string       `json:"icon_url,omitempty"`
-	LinkNames   bool         `json:"link_names,omitempty"`
-	Text        string       `json:"text,omitempty"`
-	Attachments []attachment `json:"attachments"`
+	Username    string          `json:"username,omitempty"`
+	IconEmoji   string          `json:"icon_emoji,omitempty"`
+	IconURL     string          `json:"icon_url,omitempty"`
+	LinkNames   bool            `json:"link_names,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Attachments []attachment    `json:"attachments"`
+	Blocks      json.RawMessage `json:"blocks,omitempty"`
 }
 
 // request is the request for sending a Slack notification.

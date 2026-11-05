@@ -16,6 +16,7 @@ package slack
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v2"
 )
 
@@ -329,5 +330,46 @@ actions:
 				t.Errorf("\nexpected:\n%v\ngot:\n%v", exp.ConfirmField.DismissText, action.ConfirmField.DismissText)
 			}
 		}
+	}
+}
+
+func TestSlackBlocksConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		in             string
+		expectedBlocks string
+		expectedErr    string
+	}{
+		{
+			name:           "template string",
+			in:             `blocks: '{{ template "slack.myorg.blocks" . }}'`,
+			expectedBlocks: `{{ template "slack.myorg.blocks" . }}`,
+		},
+		{
+			name:        "YAML list is rejected",
+			in:          "blocks:\n- type: divider\n",
+			expectedErr: "cannot unmarshal !!seq into string",
+		},
+		{
+			name:        "fields can't be combined with blocks",
+			in:          "blocks: '[]'\nfields:\n- title: t\n  value: v\n",
+			expectedErr: "fields and actions can't be used with blocks",
+		},
+		{
+			name:        "actions can't be combined with blocks",
+			in:          "blocks: '[]'\nactions:\n- type: button\n  text: t\n  url: https://example.com\n",
+			expectedErr: "fields and actions can't be used with blocks",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg SlackConfig
+			err := yaml.UnmarshalStrict([]byte(tc.in), &cfg)
+			if tc.expectedErr != "" {
+				require.ErrorContains(t, err, tc.expectedErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedBlocks, cfg.Blocks)
+		})
 	}
 }

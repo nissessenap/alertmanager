@@ -172,6 +172,10 @@ type SlackConfig struct {
 	MrkdwnIn    []string       `yaml:"mrkdwn_in,omitempty" json:"mrkdwn_in,omitempty"`
 	Actions     []*SlackAction `yaml:"actions,omitempty" json:"actions,omitempty"`
 
+	// Blocks is a template that renders a JSON array of Block Kit blocks.
+	// When set, the blocks are sent instead of the attachment.
+	Blocks string `yaml:"blocks,omitempty" json:"blocks,omitempty"`
+
 	// UpdateMessage enables updating existing Slack messages instead of creating new ones.
 	// Requires bot token with chat:write scope. Webhook URLs do not support updates.
 
@@ -205,6 +209,10 @@ func (c *SlackConfig) Validate() error {
 	}
 	if (c.APIURL != nil || len(c.APIURLFile) > 0) && (c.AppToken != "" || len(c.AppTokenFile) > 0) {
 		return errors.New("at most one of api_url/api_url_file & app_token/app_token_file must be configured")
+	}
+
+	if c.Blocks != "" && (len(c.Fields) > 0 || len(c.Actions) > 0) {
+		return errors.New("fields and actions can't be used with blocks")
 	}
 
 	if err := ValidateUpdateMessageAPIURL(c.UpdateMessage, c.APIURL, c.APIURLFile); err != nil {

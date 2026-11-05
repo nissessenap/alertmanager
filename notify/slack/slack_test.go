@@ -512,6 +512,39 @@ func TestSlackPostUpdatesToThread(t *testing.T) {
 		require.NotContains(t, captured[0].body, "thread_ts")
 	})
 
+	t.Run("update_message clears blocks of the initial message", func(t *testing.T) {
+		var captured []capturedRequest
+		notifier := newTestNotifier(t, &SlackConfig{UpdateMessage: true, Title: "title"}, &captured, "999.999")
+		store := nflog.NewStore(nil)
+		store.SetStr("threadTs", "111.222")
+		store.SetStr("channelId", "C123")
+
+		require.NoError(t, notifier.Notify(newCtx(store)).Err())
+
+		require.Len(t, captured, 1)
+		require.Equal(t, "https://slack.com/api/chat.update", captured[0].url)
+		require.Equal(t, []any{}, captured[0].body["blocks"])
+		require.Len(t, captured[0].body["attachments"], 1)
+	})
+
+	t.Run("blocks are sent on update and thread reply", func(t *testing.T) {
+		var captured []capturedRequest
+		notifier := newTestNotifier(t, &SlackConfig{UpdateMessage: true, PostUpdatesToThread: true, Blocks: `[{"type": "divider"}]`}, &captured, "999.999")
+		store := nflog.NewStore(nil)
+		store.SetStr("threadTs", "111.222")
+		store.SetStr("channelId", "C123")
+
+		require.NoError(t, notifier.Notify(newCtx(store)).Err())
+
+		require.Len(t, captured, 2)
+		require.Equal(t, "https://slack.com/api/chat.update", captured[0].url)
+		for _, req := range captured {
+			require.Equal(t, []any{map[string]any{"type": "divider"}}, req.body["blocks"])
+			// An empty array clears the attachments of the initial message on chat.update.
+			require.Equal(t, []any{}, req.body["attachments"])
+		}
+	})
+
 	t.Run("new firing after resolution starts a new thread", func(t *testing.T) {
 		var captured []capturedRequest
 		notifier := newTestNotifier(t, &SlackConfig{UpdateMessage: true, PostUpdatesToThread: true}, &captured, "")
@@ -651,4 +684,134 @@ func TestSlackDefaultPayload(t *testing.T) {
 			}
 		]
 	}`, payload)
+}
+
+func TestSlackBlocks(t *testing.T) {
+	const blocksTmpl = `{{ define "slack.test.blocks" }}[
+  {"type": "header", "text": {"type": "plain_text", "text": {{ .Status | toUpper | toJson }}}},
+  {"type": "section", "text": {"type": "mrkdwn", "text": {{ or .CommonAnnotations.summary "Multiple alerts" | toJson }}}}
+]{{ end }}`
+
+	for _, tc := range []struct {
+		name    string
+		blocks  string
+		summary string
+		// expectedBlocks is the expected "blocks" field, empty if Notify must fail.
+		expectedBlocks string
+		expectedErr    string
+	}{
+		{
+			name:           "valid",
+			blocks:         `{{ template "slack.test.blocks" . }}`,
+			summary:        "Database is unavailable",
+			expectedBlocks: `[{"type":"header","text":{"type":"plain_text","text":"FIRING"}},{"type":"section","text":{"type":"mrkdwn","text":"Database is unavailable"}}]`,
+		},
+		{
+			name:           "value with colon",
+			blocks:         `{{ template "slack.test.blocks" . }}`,
+			summary:        "Disk usage: 95%",
+			expectedBlocks: `[{"type":"header","text":{"type":"plain_text","text":"FIRING"}},{"type":"section","text":{"type":"mrkdwn","text":"Disk usage: 95%"}}]`,
+		},
+		{
+			name:           "value looking like a YAML bool",
+			blocks:         `{{ template "slack.test.blocks" . }}`,
+			summary:        "yes",
+			expectedBlocks: `[{"type":"header","text":{"type":"plain_text","text":"FIRING"}},{"type":"section","text":{"type":"mrkdwn","text":"yes"}}]`,
+		},
+		{
+			name:           "value looking like a number",
+			blocks:         `{{ template "slack.test.blocks" . }}`,
+			summary:        "123",
+			expectedBlocks: `[{"type":"header","text":{"type":"plain_text","text":"FIRING"}},{"type":"section","text":{"type":"mrkdwn","text":"123"}}]`,
+		},
+		{
+			name:           "value with quotes",
+			blocks:         `{{ template "slack.test.blocks" . }}`,
+			summary:        `say "hi"`,
+			expectedBlocks: `[{"type":"header","text":{"type":"plain_text","text":"FIRING"}},{"type":"section","text":{"type":"mrkdwn","text":"say \"hi\""}}]`,
+		},
+		{
+			name:        "object",
+			blocks:      `{"type": "divider"}`,
+			expectedErr: "blocks must render to a JSON array",
+		},
+		{
+			name:        "empty render",
+			blocks:      `{{ if false }}[]{{ end }}`,
+			expectedErr: "blocks must render to a JSON array",
+		},
+		{
+			name:        "empty array",
+			blocks:      `[]`,
+			expectedErr: "blocks must render to between 1 and 50 blocks, got 0",
+		},
+		{
+			name:        "too many blocks",
+			blocks:      "[" + strings.TrimSuffix(strings.Repeat(`{"type": "divider"},`, 51), ",") + "]",
+			expectedErr: "blocks must render to between 1 and 50 blocks, got 51",
+		},
+		{
+			name:        "invalid JSON without toJson",
+			blocks:      `[{"type": "section", "text": {"type": "mrkdwn", "text": "{{ .CommonAnnotations.summary }}"}}]`,
+			summary:     `say "hi"`,
+			expectedErr: "blocks must render to a JSON array",
+		},
+		{
+			name:        "template error",
+			blocks:      `{{ template "does.not.exist" . }}`,
+			expectedErr: "failed to render blocks",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			apiurl, err := url.Parse("https://slack.com/api/chat.postMessage")
+			require.NoError(t, err)
+
+			tmpl := test.CreateTmpl(t)
+			require.NoError(t, tmpl.Parse(strings.NewReader(blocksTmpl)))
+
+			notifier, err := New(&SlackConfig{
+				APIURL:      &amcommoncfg.SecretURL{URL: apiurl},
+				HTTPConfig:  &commoncfg.HTTPClientConfig{},
+				Channel:     "#alerts",
+				MessageText: "{{ .Status }}",
+				Title:       "ignored",
+				Blocks:      tc.blocks,
+			}, tmpl, promslog.NewNopLogger())
+			require.NoError(t, err)
+
+			var payload string
+			notifier.postJSONFunc = func(ctx context.Context, client *http.Client, url string, body io.Reader) (*http.Response, error) {
+				b, err := io.ReadAll(body)
+				require.NoError(t, err)
+				payload = string(b)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"ok": true}`)),
+				}, nil
+			}
+
+			firing := alert.New(model.Alert{
+				Labels:      model.LabelSet{"alertname": "test"},
+				Annotations: model.LabelSet{"summary": model.LabelValue(tc.summary)},
+				StartsAt:    time.Now(),
+				EndsAt:      time.Now().Add(time.Hour),
+			}, time.Time{}, false)
+
+			verdict := notifier.Notify(notify.WithGroupKey(context.Background(), "1"), firing)
+			if tc.expectedErr != "" {
+				require.ErrorContains(t, verdict.Err(), tc.expectedErr)
+				require.False(t, verdict.ShouldRetry())
+				require.Empty(t, payload, "no request must be sent")
+				return
+			}
+			require.NoError(t, verdict.Err())
+			require.JSONEq(t, `{
+				"channel": "#alerts",
+				"text": "firing",
+				"attachments": [],
+				"blocks": `+tc.expectedBlocks+`
+			}`, payload)
+		})
+	}
 }

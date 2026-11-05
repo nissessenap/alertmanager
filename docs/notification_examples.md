@@ -103,6 +103,59 @@ templates:
 
 This example is explained in further detail in this [blogpost](https://prometheus.io/blog/2016/03/03/custom-alertmanager-templates/).
 
+## Defining a Slack Block Kit template
+
+A Slack receiver can send [Block Kit](https://docs.slack.dev/block-kit/) blocks instead of the default attachment by setting `blocks` to a template that renders a JSON array of blocks.
+Unlike posting Block Kit with the webhook receiver, this works with the Slack-specific options such as `update_message` and `post_updates_to_thread`.
+
+Create `/etc/alertmanager/templates/slack-blocks.tmpl`:
+
+```gotemplate
+{{ define "slack.myorg.blocks" }}
+[
+  {
+    "type": "header",
+    "text": {
+      "type": "plain_text",
+      "text": {{ printf "[%s] %s" (.Status | toUpper) .CommonLabels.alertname | toJson }}
+    }
+  }
+  {{- range $i, $alert := .Alerts.Firing }}{{ if lt $i 10 }},
+  {
+    "type": "section",
+    "text": {
+      "type": "mrkdwn",
+      "text": {{ or $alert.Annotations.summary $alert.Labels.alertname | toJson }}
+    }
+  }
+  {{- end }}{{ end }}
+]
+{{ end }}
+```
+
+Reference the template from the receiver:
+
+```yaml
+receivers:
+- name: 'slack-blocks'
+  slack_configs:
+  - channel: '#alerts'
+    message_text: '{{ template "slack.default.fallback" . }}'
+    blocks: '{{ template "slack.myorg.blocks" . }}'
+
+templates:
+- '/etc/alertmanager/templates/slack-blocks.tmpl'
+```
+
+Things to keep in mind:
+
+* Every interpolated value must be piped through `toJson`. Otherwise a quote or newline in the alert data breaks the JSON and the notification fails.
+* Set `message_text`. Slack uses the top-level text as the fallback for notifications and screen readers when a message has blocks.
+* The template must render 1 to 50 blocks, otherwise the notification fails. Slack also limits the length of text in blocks, for example 3000 characters for a section and 150 for a header, so cap the number of alerts rendered in a range as in the example above.
+* Fields of `.CommonAnnotations` and `.CommonLabels` are empty when the alerts in a group have different values, and Slack rejects empty text, so add a fallback with `or` as in the example above.
+* All the attachment options of the Slack receiver, such as `title`, `text`, `color`, `fields` and `actions`, are ignored when `blocks` is set. The blocks are sent at the top level of the message, so there is no attachment color bar.
+* Alert data is not escaped for Slack `mrkdwn`, so text such as `<!channel>` in an annotation is rendered as a mention.
+
 ## Defining a reusable HTML email template
 
 The HTML body of an email notification can use a named template from an external file.

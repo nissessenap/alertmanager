@@ -36,6 +36,9 @@ import (
 // https://api.slack.com/reference/messaging/attachments#legacy_fields - 1024, no units given, assuming runes or characters.
 const maxTitleLenRunes = 1024
 
+// https://docs.slack.dev/reference/block-kit/blocks - a message can have up to 50 blocks.
+const maxBlocks = 50
+
 // New returns a new Slack notification handler.
 func New(c *SlackConfig, t *template.Template, l *slog.Logger, httpOpts ...commoncfg.HTTPClientOption) (*Notifier, error) {
 	client, err := notify.NewClientWithTracing(*c.HTTPConfig, "slack", httpOpts...)
@@ -132,6 +135,23 @@ func (n *Notifier) buildAttachment(tmplText func(string) string, logger *slog.Lo
 	return att
 }
 
+// blocks renders the configured blocks template and checks that it is a
+// JSON array of blocks within Slack's limit.
+func (n *Notifier) blocks(data *template.Data) (json.RawMessage, error) {
+	s, err := n.tmpl.ExecuteTextString(n.conf.Blocks, data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render blocks: %w", err)
+	}
+	var blocks []json.RawMessage
+	if err := json.Unmarshal([]byte(s), &blocks); err != nil {
+		return nil, fmt.Errorf("blocks must render to a JSON array: %w", err)
+	}
+	if len(blocks) == 0 || len(blocks) > maxBlocks {
+		return nil, fmt.Errorf("blocks must render to between 1 and %d blocks, got %d", maxBlocks, len(blocks))
+	}
+	return json.RawMessage(s), nil
+}
+
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.NotifyVerdict {
 	var err error
@@ -146,7 +166,16 @@ func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.Notify
 		data     = notify.GetTemplateData(ctx, n.tmpl, as, logger)
 		tmplText = notify.TmplText(n.tmpl, data, &err)
 	)
-	att := n.buildAttachment(tmplText, logger)
+	attachments := []attachment{}
+	var blocks json.RawMessage
+	if n.conf.Blocks == "" {
+		attachments = append(attachments, n.buildAttachment(tmplText, logger))
+	} else {
+		var renderErr error
+		if blocks, renderErr = n.blocks(data); renderErr != nil {
+			return notify.Unrecoverable(renderErr, notify.DefaultReason)
+		}
+	}
 
 	var u string
 	if n.conf.APIURL != nil {
@@ -171,7 +200,8 @@ func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.Notify
 		IconURL:     tmplText(n.conf.IconURL),
 		LinkNames:   n.conf.LinkNames,
 		Text:        tmplText(n.conf.MessageText),
-		Attachments: []attachment{att},
+		Attachments: attachments,
+		Blocks:      blocks,
 	}
 
 	// If a notification for this alert group has already been sent, `update_message`
@@ -200,6 +230,10 @@ func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.Notify
 	if n.conf.UpdateMessage {
 		logger.Debug("updating previously sent message", "threadTs", threadTs, "channelId", channelId)
 		updateReq := &request{message: msg, Channel: channelId, Timestamp: threadTs}
+		if updateReq.Blocks == nil {
+			// chat.update keeps the blocks of the initial message unless they are explicitly cleared.
+			updateReq.Blocks = json.RawMessage("[]")
+		}
 		if verdict := n.postRequest(ctx, "https://slack.com/api/chat.update", updateReq, nil); verdict.Err() != nil {
 			return verdict
 		}
