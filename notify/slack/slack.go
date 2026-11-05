@@ -230,10 +230,6 @@ func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.Notify
 	if n.conf.UpdateMessage {
 		logger.Debug("updating previously sent message", "threadTs", threadTs, "channelId", channelId)
 		updateReq := &request{message: msg, Channel: channelId, Timestamp: threadTs}
-		if updateReq.Blocks == nil {
-			// chat.update keeps the blocks of the initial message unless they are explicitly cleared.
-			updateReq.Blocks = json.RawMessage("[]")
-		}
 		if verdict := n.postRequest(ctx, "https://slack.com/api/chat.update", updateReq, nil); verdict.Err() != nil {
 			return verdict
 		}

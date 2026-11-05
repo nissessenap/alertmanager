@@ -512,7 +512,7 @@ func TestSlackPostUpdatesToThread(t *testing.T) {
 		require.NotContains(t, captured[0].body, "thread_ts")
 	})
 
-	t.Run("update_message clears blocks of the initial message", func(t *testing.T) {
+	t.Run("update_message in attachment mode sends no blocks", func(t *testing.T) {
 		var captured []capturedRequest
 		notifier := newTestNotifier(t, &SlackConfig{UpdateMessage: true, Title: "title"}, &captured, "999.999")
 		store := nflog.NewStore(nil)
@@ -523,7 +523,7 @@ func TestSlackPostUpdatesToThread(t *testing.T) {
 
 		require.Len(t, captured, 1)
 		require.Equal(t, "https://slack.com/api/chat.update", captured[0].url)
-		require.Equal(t, []any{}, captured[0].body["blocks"])
+		require.NotContains(t, captured[0].body, "blocks")
 		require.Len(t, captured[0].body["attachments"], 1)
 	})
 

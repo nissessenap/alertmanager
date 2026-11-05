@@ -154,6 +154,7 @@ Things to keep in mind:
 * The template must render 1 to 50 blocks, otherwise the notification fails. Slack also limits the length of text in blocks, for example 3000 characters for a section and 150 for a header, so cap the number of alerts rendered in a range as in the example above.
 * Fields of `.CommonAnnotations` and `.CommonLabels` are empty when the alerts in a group have different values, and Slack rejects empty text, so add a fallback with `or` as in the example above.
 * All the attachment options of the Slack receiver, such as `title`, `text`, `color`, `fields` and `actions`, are ignored when `blocks` is set. The blocks are sent at the top level of the message, so there is no attachment color bar.
+* With `update_message`, switching a receiver from `blocks` back to attachments while a message is still being updated leaves the old blocks above the new attachment, unless `message_text` is set. Switching to `blocks` replaces the old attachment.
 * Alert data is not escaped for Slack `mrkdwn`, so text such as `<!channel>` in an annotation is rendered as a mention.
 
 ## Defining a reusable HTML email template
