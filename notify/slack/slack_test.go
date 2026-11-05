@@ -572,3 +572,83 @@ func TestSlackPostUpdatesToThread(t *testing.T) {
 		require.Equal(t, "4.000", reqs[1].body["thread_ts"])
 	})
 }
+
+func TestSlackDefaultPayload(t *testing.T) {
+	apiurl, err := url.Parse("https://slack.com/api/chat.postMessage")
+	require.NoError(t, err)
+
+	short := true
+	conf := DefaultSlackConfig
+	conf.APIURL = &amcommoncfg.SecretURL{URL: apiurl}
+	conf.HTTPConfig = &commoncfg.HTTPClientConfig{}
+	conf.Channel = "#alerts"
+	conf.MessageText = "{{ .Status }}"
+	conf.Fields = []*SlackField{
+		{Title: "Severity", Value: "{{ .CommonLabels.severity }}", Short: &short},
+		{Title: "Summary", Value: "{{ .CommonAnnotations.summary }}"},
+	}
+	conf.Actions = []*SlackAction{
+		{
+			Type: "button",
+			Text: "Runbook",
+			URL:  "https://example.com/{{ .CommonLabels.alertname }}",
+			ConfirmField: &SlackConfirmationField{
+				Text: "Open {{ .CommonLabels.alertname }}?",
+			},
+		},
+	}
+
+	notifier, err := New(&conf, test.CreateTmpl(t), promslog.NewNopLogger())
+	require.NoError(t, err)
+
+	var payload string
+	notifier.postJSONFunc = func(ctx context.Context, client *http.Client, url string, body io.Reader) (*http.Response, error) {
+		b, err := io.ReadAll(body)
+		require.NoError(t, err)
+		payload = string(b)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok": true}`)),
+		}, nil
+	}
+
+	firing := alert.New(model.Alert{
+		Labels:      model.LabelSet{"alertname": "DiskFull", "severity": "critical"},
+		Annotations: model.LabelSet{"summary": "Disk usage: 95%"},
+		StartsAt:    time.Now(),
+		EndsAt:      time.Now().Add(time.Hour),
+	}, time.Time{}, false)
+
+	ctx := notify.WithGroupKey(context.Background(), "1")
+	require.NoError(t, notifier.Notify(ctx, firing).Err())
+	require.JSONEq(t, `{
+		"channel": "#alerts",
+		"username": "Alertmanager",
+		"text": "firing",
+		"attachments": [
+			{
+				"title": "[FIRING:1]  (DiskFull critical)",
+				"title_link": "http://am/#/alerts?receiver=",
+				"text": "",
+				"fallback": "[FIRING:1]  (DiskFull critical) | http://am/#/alerts?receiver=",
+				"callback_id": "",
+				"fields": [
+					{"title": "Severity", "value": "critical", "short": true},
+					{"title": "Summary", "value": "Disk usage: 95%", "short": false}
+				],
+				"actions": [
+					{
+						"type": "button",
+						"text": "Runbook",
+						"url": "https://example.com/DiskFull",
+						"confirm": {"text": "Open DiskFull?"}
+					}
+				],
+				"footer": "",
+				"color": "danger",
+				"mrkdwn_in": ["fallback", "pretext", "text"]
+			}
+		]
+	}`, payload)
+}

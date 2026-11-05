@@ -53,20 +53,8 @@ func New(c *SlackConfig, t *template.Template, l *slog.Logger, httpOpts ...commo
 	}, nil
 }
 
-// Notify implements the Notifier interface.
-func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.NotifyVerdict {
-	var err error
-	key, err := notify.ExtractGroupKey(ctx)
-	if err != nil {
-		return notify.Unrecoverable(err, notify.DefaultReason)
-	}
-	logger := n.logger.With("group_key", key)
-	logger.Debug("extracted group key")
-
-	var (
-		data     = notify.GetTemplateData(ctx, n.tmpl, as, logger)
-		tmplText = notify.TmplText(n.tmpl, data, &err)
-	)
+// attachment renders the configured attachment fields.
+func (n *Notifier) buildAttachment(tmplText func(string) string, logger *slog.Logger) attachment {
 	var markdownIn []string
 
 	if len(n.conf.MrkdwnIn) == 0 {
@@ -79,7 +67,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.Notify
 	if truncated {
 		logger.Warn("Truncated title", "max_runes", maxTitleLenRunes)
 	}
-	att := &attachment{
+	att := attachment{
 		Title:      title,
 		TitleLink:  tmplText(n.conf.TitleLink),
 		Pretext:    tmplText(n.conf.Pretext),
@@ -141,6 +129,24 @@ func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.Notify
 		}
 		att.Actions = actions
 	}
+	return att
+}
+
+// Notify implements the Notifier interface.
+func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.NotifyVerdict {
+	var err error
+	key, err := notify.ExtractGroupKey(ctx)
+	if err != nil {
+		return notify.Unrecoverable(err, notify.DefaultReason)
+	}
+	logger := n.logger.With("group_key", key)
+	logger.Debug("extracted group key")
+
+	var (
+		data     = notify.GetTemplateData(ctx, n.tmpl, as, logger)
+		tmplText = notify.TmplText(n.tmpl, data, &err)
+	)
+	att := n.buildAttachment(tmplText, logger)
 
 	var u string
 	if n.conf.APIURL != nil {
@@ -165,7 +171,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*alert.Alert) notify.Notify
 		IconURL:     tmplText(n.conf.IconURL),
 		LinkNames:   n.conf.LinkNames,
 		Text:        tmplText(n.conf.MessageText),
-		Attachments: []attachment{*att},
+		Attachments: []attachment{att},
 	}
 
 	// If a notification for this alert group has already been sent, `update_message`
